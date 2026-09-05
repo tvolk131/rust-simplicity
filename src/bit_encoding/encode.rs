@@ -111,8 +111,12 @@ impl<N: node::Marker> hash::Hash for EncodeId<N> {
 /// Shares nodes based on IHR, *except* for Hidden nodes, which are identified
 /// solely by the hash they contain
 #[derive(Clone)]
+struct PlaceholderForOld;
+
+
+#[derive(Clone)]
 pub struct EncodeSharing<N: node::Marker> {
-    map: HashMap<EncodeId<N>, usize>,
+    map: HashMap<EncodeId<N>, usize, FxBuildHasher>,
 }
 
 // Annoyingly we have to implement Default by hand
@@ -121,6 +125,59 @@ impl<N: node::Marker> Default for EncodeSharing<N> {
         EncodeSharing {
             map: HashMap::default(),
         }
+    }
+}
+
+/// A minimal FxHasher (the Firefox/rustc hasher) for the sharing map: the
+/// keys are hash values themselves, so SipHash's DOS resistance buys nothing
+/// and its cost dominated profiling of `to_vec_*`.
+#[derive(Default, Clone, Copy)]
+struct FxHasher {
+    hash: u64,
+}
+
+const FX_SEED1: u64 = 0x51_7c_c1_b7_27_22_0a_95;
+const FX_SEED2: u64 = 0x9e_37_79_b9_7f_4a_7c_15;
+
+impl FxHasher {
+    #[inline]
+    fn add(&mut self, word: u64) {
+        self.hash = (self.hash.rotate_left(5) ^ word).wrapping_mul(FX_SEED1);
+    }
+}
+
+impl std::hash::Hasher for FxHasher {
+    #[inline]
+    fn write(&mut self, bytes: &[u8]) {
+        // Sharing keys hash u32/u64-sized chunks (hash digests, indices);
+        // handle the tail byte-wise.
+        let mut chunks = bytes.chunks_exact(8);
+        for chunk in &mut chunks {
+            self.add(u64::from_le_bytes(chunk.try_into().expect("8 byte chunk")));
+        }
+        for chunk in chunks.remainder().chunks_exact(4) {
+            self.hash = (self.hash.rotate_left(5)
+                ^ u64::from(u32::from_le_bytes(chunk.try_into().expect("4 byte chunk"))))
+            .wrapping_mul(FX_SEED1);
+        }
+        for &byte in chunks.remainder() {
+            self.add(u64::from(byte));
+        }
+    }
+    #[inline]
+    fn finish(&self) -> u64 {
+        // Final avalanche, as in rustc-hash.
+        (self.hash ^ (self.hash >> 32)).wrapping_mul(FX_SEED2)
+    }
+}
+
+#[derive(Default, Clone, Copy)]
+struct FxBuildHasher;
+
+impl std::hash::BuildHasher for FxBuildHasher {
+    type Hasher = FxHasher;
+    fn build_hasher(&self) -> FxHasher {
+        FxHasher::default()
     }
 }
 
