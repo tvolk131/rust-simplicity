@@ -58,6 +58,7 @@ impl CommitData {
     }
 
     /// Helper function to compute a cached AMR
+    #[allow(dead_code)] // PROTOTYPE(lazy-amr): retained for the lazy accessor
     fn incomplete_amr(
         inner: Inner<&Arc<Self>, &NoDisconnect, &NoWitness>,
         arrow: &FinalArrow,
@@ -122,10 +123,12 @@ impl CommitData {
     ) -> Result<Self, types::Error> {
         let final_arrow = arrow.finalize()?;
         let imr = Self::imr(inner.clone());
-        let amr = Self::incomplete_amr(inner, &final_arrow);
         Ok(CommitData {
             imr,
-            amr,
+            // PROTOTYPE(lazy-amr): the per-node AMR has no consumer on the
+            // commit path (the encoder shares by IHR; satisfy/prune recompute
+            // their own via RedeemData), so measure skipping it entirely.
+            amr: None,
             ihr: imr.map(|ihr| Ihr::from_imr(ihr, &final_arrow)),
             arrow: final_arrow,
         })
@@ -136,10 +139,10 @@ impl CommitData {
         inner: Inner<&Arc<Self>, &NoDisconnect, &NoWitness>,
     ) -> Self {
         let imr = Self::imr(inner.clone());
-        let amr = Self::incomplete_amr(inner, &arrow);
         CommitData {
             imr,
-            amr,
+            // PROTOTYPE(lazy-amr): see `new`.
+            amr: None,
             ihr: imr.map(|ihr| Ihr::from_imr(ihr, &arrow)),
             arrow,
         }
