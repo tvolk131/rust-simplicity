@@ -4,7 +4,7 @@ use crate::dag::{DagLike, MaxSharing, NoSharing, PostOrderIterItem};
 use crate::jet::Jet;
 use crate::types::arrow::{Arrow, FinalArrow};
 use crate::{encode, types, Value};
-use crate::{Amr, BitIter, BitWriter, Cmr, DecodeError, Ihr, Imr};
+use crate::{Amr, BitIter, BitWriter, Cmr, DecodeError, Ihr, Imr, Tmr};
 
 use super::{
     Construct, ConstructData, ConstructNode, Constructible, Converter, Inner, Marker, NoDisconnect,
@@ -24,10 +24,22 @@ impl Marker for Commit {
     type CachedData = Arc<CommitData>;
     type Witness = NoWitness;
     type Disconnect = NoDisconnect;
-    type SharingId = Ihr;
+    // PROTOTYPE(cmr-sharing): share by (CMR, type TMRs) instead of IHR.
+    // The IHR is a hash of (IMR, source TMR, target TMR), and inductively
+    // two nodes with the same combinator, child CMRs, and types have the
+    // same IHR - so this key reproduces IHR discrimination without any
+    // eager hashing. Witness nodes must not share (constant CMR, distinct
+    // values); RedeemNode keeps IHR sharing where witness values differ.
+    type SharingId = (Cmr, Tmr, Tmr);
 
-    fn compute_sharing_id(_: Cmr, cached_data: &Arc<CommitData>) -> Option<Ihr> {
-        cached_data.ihr
+    fn compute_sharing_id(
+        cmr: Cmr,
+        cached_data: &Arc<CommitData>,
+    ) -> Option<(Cmr, Tmr, Tmr)> {
+        if cached_data.is_witness {
+            return None;
+        }
+        Some((cmr, cached_data.arrow.source.tmr(), cached_data.arrow.target.tmr()))
     }
 }
 
@@ -35,6 +47,9 @@ impl Marker for Commit {
 pub struct CommitData {
     /// The source and target types of the node
     arrow: FinalArrow,
+    /// Whether this node is a witness node (witnesses never share under the
+    /// CMR sharing id: their CMR is constant but their values differ).
+    is_witness: bool,
     /// The IMR of the node if it exists. This is distinct from its IHR; it is
     /// used during computation of the IHR.
     imr: Option<Imr>,
@@ -96,6 +111,7 @@ impl CommitData {
     }
 
     /// Helper function to compute a cached first-pass IHR
+    #[allow(dead_code)] // PROTOTYPE(cmr-sharing): retained for the lazy accessor
     fn imr(inner: Inner<&Arc<Self>, &NoDisconnect, &NoWitness>) -> Option<Imr> {
         match inner {
             Inner::Iden => Some(Imr::iden()),
@@ -122,14 +138,15 @@ impl CommitData {
         inner: Inner<&Arc<Self>, &NoDisconnect, &NoWitness>,
     ) -> Result<Self, types::Error> {
         let final_arrow = arrow.finalize()?;
-        let imr = Self::imr(inner.clone());
+        let is_witness = matches!(inner, Inner::Witness(..));
         Ok(CommitData {
-            imr,
-            // PROTOTYPE(lazy-amr): the per-node AMR has no consumer on the
-            // commit path (the encoder shares by IHR; satisfy/prune recompute
-            // their own via RedeemData), so measure skipping it entirely.
+            // PROTOTYPE(cmr-sharing): sharing keys off the CMR now, so the
+            // per-node IMR/IHR (like the AMR) have no eager consumer on the
+            // commit path; satisfy/prune recompute their own in RedeemData.
+            is_witness,
+            imr: None,
             amr: None,
-            ihr: imr.map(|ihr| Ihr::from_imr(ihr, &final_arrow)),
+            ihr: None,
             arrow: final_arrow,
         })
     }
@@ -138,12 +155,12 @@ impl CommitData {
         arrow: FinalArrow,
         inner: Inner<&Arc<Self>, &NoDisconnect, &NoWitness>,
     ) -> Self {
-        let imr = Self::imr(inner.clone());
         CommitData {
-            imr,
-            // PROTOTYPE(lazy-amr): see `new`.
+            // PROTOTYPE(cmr-sharing): see `new`.
+            is_witness: matches!(inner, Inner::Witness(..)),
+            imr: None,
             amr: None,
-            ihr: imr.map(|ihr| Ihr::from_imr(ihr, &arrow)),
+            ihr: None,
             arrow,
         }
     }
