@@ -70,3 +70,6 @@ cast_precision_loss = "warn"
 cast_ptr_alignment = "warn"
 cast_sign_loss = "allow" # All casts should include a code comment (except in test code).
 
+
+[patch.crates-io]
+bitcoin_hashes = { git = "https://github.com/tvolk131/rust-bitcoin.git", branch = "accel/sha256-aarch64" }
