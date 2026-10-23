@@ -479,24 +479,22 @@ impl<'brand> WithGhostToken<'brand, ContextInner<'brand>> {
         new: Bound<'brand>,
         stack: &mut Vec<BindTask<'brand>>,
     ) -> Result<(), BindError<'brand>> {
-        let existing_bound = self.slab[existing.index].shallow_clone();
+        // Unlike the recursive traversal, this step only queues child bindings,
+        // so it can borrow the existing bound instead of cloning it. Borrow the
+        // slab explicitly to allow independent access to the ghost token below.
+        let existing_bound = &self.inner.slab[existing.index];
         let bind_error = || BindError {
             existing: existing.clone(),
             new: new.shallow_clone(),
         };
 
-        match (&existing_bound, &new) {
-            // Binding a free type to anything is a no-op
+        match (existing_bound, &new) {
             (_, Bound::Free(_)) => Ok(()),
-            // Free types are simply dropped and replaced by the new bound
             (Bound::Free(_), _) => {
-                // Free means non-finalized, so set() is ok.
                 self.reassign_non_complete(existing, new);
                 Ok(())
             }
-            // Binding complete->complete shouldn't ever happen, but if so, we just
-            // compare the two types and return a pass/fail
-            (Bound::Complete(ref existing_final), Bound::Complete(ref new_final)) => {
+            (Bound::Complete(existing_final), Bound::Complete(new_final)) => {
                 if existing_final == new_final {
                     Ok(())
                 } else {

@@ -79,6 +79,39 @@ fn drop_right_sum() {
     on_small_stack("drop_right_sum", || drop_nested_type(true, false));
 }
 
+fn drop_branching_type(nest_left: bool) {
+    let mut ty = Final::unit();
+    let leaf = Arc::downgrade(&ty);
+    let mut siblings = Vec::with_capacity(DEPTH);
+    for _ in 0..DEPTH {
+        // Both children have children of their own, exercising the destructor's
+        // work stack rather than only its path for leaves and shared children.
+        let sibling = Final::sum(Final::unit(), Final::unit());
+        siblings.push(Arc::downgrade(&sibling));
+        ty = if nest_left {
+            Final::product(ty, sibling)
+        } else {
+            Final::product(sibling, ty)
+        };
+    }
+    assert_eq!(ty.bit_width(), DEPTH);
+    drop(ty);
+    assert!(leaf.upgrade().is_none());
+    assert!(siblings
+        .into_iter()
+        .all(|sibling| sibling.upgrade().is_none()));
+}
+
+#[test]
+fn drop_left_branching_type() {
+    on_small_stack("drop_left_branching_type", || drop_branching_type(true));
+}
+
+#[test]
+fn drop_right_branching_type() {
+    on_small_stack("drop_right_branching_type", || drop_branching_type(false));
+}
+
 #[test]
 fn drop_shared_type() {
     on_small_stack("drop_shared_type", || {
