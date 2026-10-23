@@ -44,6 +44,36 @@ pub struct Final {
     tmr: Tmr,
 }
 
+impl Drop for Final {
+    fn drop(&mut self) {
+        // As with Node and Incomplete, detach children before dropping each
+        // node so that the call stack does not grow with the type's depth.
+        fn push_children(stack: &mut Vec<Arc<Final>>, bound: CompleteBound) {
+            match bound {
+                CompleteBound::Unit => {}
+                CompleteBound::Sum(left, right) | CompleteBound::Product(left, right) => {
+                    stack.push(left);
+                    stack.push(right);
+                }
+            }
+        }
+
+        let mut stack = Vec::new();
+        push_children(
+            &mut stack,
+            std::mem::replace(&mut self.bound, CompleteBound::Unit),
+        );
+        while let Some(child) = stack.pop() {
+            if let Some(mut child) = Arc::into_inner(child) {
+                push_children(
+                    &mut stack,
+                    std::mem::replace(&mut child.bound, CompleteBound::Unit),
+                );
+            }
+        }
+    }
+}
+
 impl PartialEq for Final {
     fn eq(&self, other: &Self) -> bool {
         self.tmr == other.tmr
