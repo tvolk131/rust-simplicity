@@ -1,0 +1,100 @@
+{
+  "verus": {
+    "profile": "release",
+    "version": "0.2026.10.18.7d82994",
+    "platform": {
+      "os": "macos",
+      "arch": "aarch64"
+    },
+    "toolchain": "1.99.1-aarch64-apple-darwin (overridden by environment variable RUSTUP_TOOLCHAIN)",
+    "commit": "7d829946231d6413a398f6e4160cdfe951261dad"
+  },
+  "model_sha256": "d99e08cc21f12821f5b2f5ff85bb14c168968063744ba9f170aafb5e07f388c2",
+  "source_sha256": {
+    "src/types/context.rs": "10c52cba6d979601285dddb800f8c341c8da9b1a31583b4f259789e8d466aed1",
+    "src/types/union_bound.rs": "6d94cb3ad76b15877913f5bfc63fbd856d2a14dbfa950e48c40eb58f09d62e14"
+  },
+  "checks": [
+    {
+      "name": "baseline",
+      "exit": 0,
+      "encountered-error": false,
+      "encountered-vir-error": false,
+      "success": true,
+      "verified": 25,
+      "errors": 0,
+      "is-verifying-entire-crate": true
+    },
+    {
+      "name": "omit_rollback_compile",
+      "compiled": true
+    },
+    {
+      "name": "omit_rollback",
+      "exit": 1,
+      "encountered-error": true,
+      "encountered-vir-error": false,
+      "success": false,
+      "verified": 24,
+      "errors": 1,
+      "is-verifying-entire-crate": true
+    },
+    {
+      "name": "fifo_unwind_compile",
+      "compiled": true
+    },
+    {
+      "name": "fifo_unwind",
+      "exit": 1,
+      "encountered-error": true,
+      "encountered-vir-error": false,
+      "success": false,
+      "verified": 24,
+      "errors": 1,
+      "is-verifying-entire-crate": true
+    },
+    {
+      "name": "reverse_children_compile",
+      "compiled": true
+    },
+    {
+      "name": "reverse_children",
+      "exit": 1,
+      "encountered-error": true,
+      "encountered-vir-error": false,
+      "success": false,
+      "verified": 24,
+      "errors": 1,
+      "is-verifying-entire-crate": true
+    },
+    {
+      "name": "premature_finish_compile",
+      "compiled": true
+    },
+    {
+      "name": "premature_finish",
+      "exit": 1,
+      "encountered-error": true,
+      "encountered-vir-error": false,
+      "success": false,
+      "verified": 24,
+      "errors": 1,
+      "is-verifying-entire-crate": true
+    },
+    {
+      "name": "wrong_saved_child_compile",
+      "compiled": true
+    },
+    {
+      "name": "wrong_saved_child",
+      "exit": 1,
+      "encountered-error": true,
+      "encountered-vir-error": false,
+      "success": false,
+      "verified": 24,
+      "errors": 1,
+      "is-verifying-entire-crate": true
+    }
+  ],
+  "success": true
+}

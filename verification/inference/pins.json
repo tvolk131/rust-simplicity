@@ -1,0 +1,12 @@
+{
+  "verus_version": "0.2026.10.18.7d82994",
+  "verus_commit": "7d829946231d6413a398f6e4160cdfe951261dad",
+  "verus_release": "https://github.com/verus-lang/verus/releases/tag/release/0.2026.10.18.7d82994",
+  "macos_arm64_asset_sha256": "3fc56c58277b5f0999368f7b3a2b07ba4eb9ec2965454ce7a9f2769c0464d32b",
+  "modeled_commit": "ea065b8",
+  "source_base": "b93345f68fcc1886ac50650a1a13a1cec31d4dec",
+  "source_sha256": {
+    "src/types/context.rs": "10c52cba6d979601285dddb800f8c341c8da9b1a31583b4f259789e8d466aed1",
+    "src/types/union_bound.rs": "6d94cb3ad76b15877913f5bfc63fbd856d2a14dbfa950e48c40eb58f09d62e14"
+  }
+}
