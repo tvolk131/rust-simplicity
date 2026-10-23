@@ -25,6 +25,7 @@ use ghost_cell::GhostToken;
 use crate::dag::{Dag, DagLike, SharingTracker};
 use crate::jet::Jet;
 
+use super::union_bound::PendingUnion;
 use super::{
     Bound, CompleteBound, Error, Final, Incomplete, Type, TypeInner, UbElement, WithGhostToken,
 };
@@ -338,6 +339,20 @@ struct BindError<'brand> {
     new: Bound<'brand>,
 }
 
+/// Continuations for the depth-first binding traversal.
+enum BindTask<'brand> {
+    Bind(BoundRef<'brand>, Bound<'brand>),
+    Unify(TypeInner<'brand>, TypeInner<'brand>),
+    Finalize {
+        existing: BoundRef<'brand>,
+        is_sum: bool,
+        left: TypeInner<'brand>,
+        right: TypeInner<'brand>,
+    },
+    /// Keep the undo information until all bindings below this union succeed.
+    FinishUnion(PendingUnion<'brand, BoundRef<'brand>>),
+}
+
 impl<'brand> ContextInner<'brand> {
     fn alloc_bound(&mut self, bound: Bound<'brand>) -> BoundRef<'brand> {
         self.slab.push(bound);
@@ -387,17 +402,82 @@ impl<'brand> WithGhostToken<'brand, ContextInner<'brand>> {
         existing: &TypeInner<'brand>,
         other: &TypeInner<'brand>,
     ) -> Result<(), BindError<'brand>> {
-        existing
-            .bound
-            .unify(self, &other.bound, |self_, x_bound, y_bound| {
-                self_.bind(x_bound, self_.slab[y_bound.index].shallow_clone())
-            })
+        if let Some(union) = existing.bound.unify(&mut self.token, &other.bound) {
+            let new = self.slab[union.old_root.index].shallow_clone();
+            let result = self.bind(union.new_root.clone(), new);
+            if result.is_err() {
+                union.rollback(&mut self.token);
+            }
+            result
+        } else {
+            Ok(())
+        }
     }
 
     fn bind(
         &mut self,
         existing: BoundRef<'brand>,
         new: Bound<'brand>,
+    ) -> Result<(), BindError<'brand>> {
+        // Start with a task outside the Vec so that leaf bindings, including
+        // free and complete types, do not need to allocate a work stack.
+        let mut task = BindTask::Bind(existing, new);
+        let mut stack = Vec::new();
+        loop {
+            match task {
+                BindTask::Bind(existing, new) => {
+                    if let Err(err) = self.bind_step(existing, new, &mut stack) {
+                        // This is the recursive error unwind: only unions whose
+                        // child bindings have not finished are rolled back.
+                        while let Some(task) = stack.pop() {
+                            if let BindTask::FinishUnion(union) = task {
+                                union.rollback(&mut self.token);
+                            }
+                        }
+                        return Err(err);
+                    }
+                }
+                BindTask::Unify(existing, other) => {
+                    if let Some(union) = existing.bound.unify(&mut self.token, &other.bound) {
+                        let existing = union.new_root.clone();
+                        let new = self.slab[union.old_root.index].shallow_clone();
+                        stack.push(BindTask::FinishUnion(union));
+                        stack.push(BindTask::Bind(existing, new));
+                    }
+                }
+                BindTask::Finalize {
+                    existing,
+                    is_sum,
+                    left,
+                    right,
+                } => {
+                    // Finalize only after both children's bindings have run,
+                    // preserving the information available during inference.
+                    if let Some((data1, data2)) = self.complete_pair_data(&left, &right) {
+                        self.reassign_non_complete(
+                            existing,
+                            Bound::Complete(if is_sum {
+                                Final::sum(data1, data2)
+                            } else {
+                                Final::product(data1, data2)
+                            }),
+                        );
+                    }
+                }
+                BindTask::FinishUnion(_) => {}
+            }
+            match stack.pop() {
+                Some(next) => task = next,
+                None => return Ok(()),
+            }
+        }
+    }
+
+    fn bind_step(
+        &mut self,
+        existing: BoundRef<'brand>,
+        new: Bound<'brand>,
+        stack: &mut Vec<BindTask<'brand>>,
     ) -> Result<(), BindError<'brand>> {
         let existing_bound = self.slab[existing.index].shallow_clone();
         let bind_error = || BindError {
@@ -423,7 +503,7 @@ impl<'brand> WithGhostToken<'brand, ContextInner<'brand>> {
                     Err(bind_error())
                 }
             }
-            // Binding an incomplete to a complete type requires recursion.
+            // Bind the children of an incomplete type to the complete children.
             (Bound::Complete(complete), incomplete) | (incomplete, Bound::Complete(complete)) => {
                 match (complete.bound(), incomplete) {
                     // A unit might match a Bound::Free(..) or a Bound::Complete(..),
@@ -436,33 +516,25 @@ impl<'brand> WithGhostToken<'brand, ContextInner<'brand>> {
                     | (CompleteBound::Sum(ref comp1, ref comp2), Bound::Sum(ref ty1, ref ty2)) => {
                         let bound1 = ty1.bound.root(&mut self.token);
                         let bound2 = ty2.bound.root(&mut self.token);
-                        self.bind(bound1, Bound::Complete(Arc::clone(comp1)))?;
-                        self.bind(bound2, Bound::Complete(Arc::clone(comp2)))
+                        stack.push(BindTask::Bind(bound2, Bound::Complete(Arc::clone(comp2))));
+                        stack.push(BindTask::Bind(bound1, Bound::Complete(Arc::clone(comp1))));
+                        Ok(())
                     }
                     _ => Err(bind_error()),
                 }
             }
             (Bound::Sum(ref x1, ref x2), Bound::Sum(ref y1, ref y2))
             | (Bound::Product(ref x1, ref x2), Bound::Product(ref y1, ref y2)) => {
-                self.unify(x1, y1)?;
-                self.unify(x2, y2)?;
-                // This type was not complete, but it may be after unification, giving us
-                // an opportunity to finaliize it. We do this eagerly to make sure that
-                // "complete" (no free children) is always equivalent to "finalized" (the
-                // bound field having variant Bound::Complete(..)), even during inference.
-                //
-                // It also gives the user access to more information about the type,
-                // prior to finalization.
-                if let Some((data1, data2)) = self.complete_pair_data(y1, y2) {
-                    self.reassign_non_complete(
-                        existing,
-                        Bound::Complete(if let Bound::Sum(..) = existing_bound {
-                            Final::sum(data1, data2)
-                        } else {
-                            Final::product(data1, data2)
-                        }),
-                    );
-                }
+                // LIFO order: finish the left subtree, then the right subtree,
+                // then eagerly finalize the parent if both children are complete.
+                stack.push(BindTask::Finalize {
+                    existing,
+                    is_sum: matches!(existing_bound, Bound::Sum(..)),
+                    left: y1.shallow_clone(),
+                    right: y2.shallow_clone(),
+                });
+                stack.push(BindTask::Unify(x2.shallow_clone(), y2.shallow_clone()));
+                stack.push(BindTask::Unify(x1.shallow_clone(), y1.shallow_clone()));
                 Ok(())
             }
             (_, _) => Err(bind_error()),
