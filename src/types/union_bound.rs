@@ -15,13 +15,13 @@
 //!
 //! Merging classes is done using the [`UbElement::unify`] method. Since when two
 //! classes are merged, there is no longer any way to distinguish elements of
-//! either, it is essential that they actually be equal. This is accomplished by
-//! the `bind_fn` parameter to `unify`, which takes the representatives of the
-//! original classes, checks that they are equal (or uses interior mutability to
-//! manipulate them to be equal), and returns either success or failure.
+//! either, it is essential that they actually be equal. The returned
+//! [`PendingUnion`] contains the representatives of the original classes so
+//! that the caller can check or constrain them to be equal.
 //!
-//! If `bind_fn` returns an error, this error is returned by `unify`, and the
-//! classes are not merged.
+//! If those constraints fail, the caller must roll back the pending union.
+//! Keeping this state explicitly lets type inference use a work stack instead
+//! of recursive callbacks.
 //!
 //! This is a classic CS algorithm. We use the "path-halving" variant of it, which
 //! was inspired by the same algorithm in the C implementation of the code, which
@@ -106,6 +106,24 @@ enum UbData<'brand, T> {
     EqualTo(UbElement<'brand, T>),
 }
 
+/// A union whose representatives still need to be bound to each other.
+///
+/// Drop this after a successful bind. On failure, roll back pending unions in
+/// reverse order. Unions whose binds already succeeded should not be undone.
+#[must_use]
+pub struct PendingUnion<'brand, T> {
+    pub new_root: T,
+    pub old_root: T,
+    child: UbElement<'brand, T>,
+}
+
+impl<'brand, T> PendingUnion<'brand, T> {
+    pub fn rollback(self, token: &mut GhostToken<'brand>) {
+        // As in the recursive implementation, retain ranks and path compression.
+        self.child.inner.borrow_mut(token).data = UbData::Root(self.old_root);
+    }
+}
+
 impl<T> UbData<'_, T> {
     fn unwrap_root(&self) -> &T {
         match self {
@@ -174,17 +192,14 @@ impl<'brand, T: PointerLike> UbElement<'brand, T> {
     /// Combine two sets.
     ///
     /// When the two sets are combined, the representative of one will be replaced
-    /// by the representative of the other. The user must force these two elements
-    /// to actually be equal. This is accomplished with the `bind_fn` function,
-    /// which takes two arguments: the **new representative that will be kept**
-    /// followed by the **old representative that will be dropped**.
-    pub fn unify<D, E, Bind: FnOnce(&mut WithGhostToken<'brand, D>, T, &T) -> Result<(), E>>(
+    /// by the representative of the other. The caller must bind the returned
+    /// `new_root` to `old_root`, rolling back the union if that fails. Returns
+    /// `None` if the elements already belong to the same set.
+    pub fn unify(
         &self,
-        with_token: &mut WithGhostToken<'brand, D>,
+        token: &mut GhostToken<'brand>,
         other: &Self,
-        bind_fn: Bind,
-    ) -> Result<(), E> {
-        let token = &mut with_token.token;
+    ) -> Option<PendingUnion<'brand, T>> {
         let mut x_root = self.root_element(token);
         let mut y_root = other.root_element(token);
 
@@ -194,7 +209,7 @@ impl<'brand, T: PointerLike> UbElement<'brand, T> {
         // In the case that we are unifying a variable with itself, there is
         // nothing to do. So exit early.
         if x_elem.data.unwrap_root().ptr_eq(y_elem.data.unwrap_root()) {
-            return Ok(());
+            return None;
         }
 
         // Swap so that x always has rank >= y. Then x will become the parent of
@@ -228,16 +243,11 @@ impl<'brand, T: PointerLike> UbElement<'brand, T> {
         let old_y_data = mem::replace(&mut y_elem.data, UbData::EqualTo(x_root.shallow_clone()));
 
         match old_y_data {
-            UbData::Root(ref y_data) => {
-                match bind_fn(with_token, x_data, y_data) {
-                    Ok(()) => Ok(()),
-                    Err(e) => {
-                        // In case of error, put the old data back.
-                        y_root.inner.borrow_mut(&mut with_token.token).data = old_y_data;
-                        Err(e)
-                    }
-                }
-            }
+            UbData::Root(y_data) => Some(PendingUnion {
+                new_root: x_data,
+                old_root: y_data,
+                child: y_root,
+            }),
             UbData::EqualTo(..) => unreachable!(),
         }
     }
