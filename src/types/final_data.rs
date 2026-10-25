@@ -44,6 +44,47 @@ pub struct Final {
     tmr: Tmr,
 }
 
+impl Drop for Final {
+    fn drop(&mut self) {
+        // This also handles children whose bounds were already detached below.
+        if matches!(self.bound, CompleteBound::Unit) {
+            return;
+        }
+
+        // Detach children before dropping each node so the call stack does not
+        // grow with the type's depth. Shared children need no further traversal.
+        fn take_bound(child: Arc<Final>) -> CompleteBound {
+            if let Some(mut child) = Arc::into_inner(child) {
+                std::mem::replace(&mut child.bound, CompleteBound::Unit)
+            } else {
+                CompleteBound::Unit
+            }
+        }
+
+        let mut stack = Vec::new();
+        let mut bound = std::mem::replace(&mut self.bound, CompleteBound::Unit);
+        loop {
+            bound = match bound {
+                CompleteBound::Unit => match stack.pop() {
+                    Some(next) => next,
+                    None => break,
+                },
+                CompleteBound::Sum(left, right) | CompleteBound::Product(left, right) => {
+                    match (take_bound(left), take_bound(right)) {
+                        // No allocation is needed for leaves, shared children,
+                        // or chains with only one nontrivial child at each step.
+                        (CompleteBound::Unit, next) | (next, CompleteBound::Unit) => next,
+                        (left, right) => {
+                            stack.push(left);
+                            right
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 impl PartialEq for Final {
     fn eq(&self, other: &Self) -> bool {
         self.tmr == other.tmr
